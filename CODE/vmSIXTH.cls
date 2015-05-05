@@ -112,6 +112,73 @@ Private Enum LCMAP
     LCMAP_TRADITIONAL_CHINESE = &H4000000
 End Enum
 
+'Comparing Strings:
+'--------------------------------------------------------------------------------------
+
+'Binary string comparison (case-sensitive) _
+ <msdn.microsoft.com/en-us/library/windows/desktop/dd317762(v=vs.85).aspx>
+Private Declare Function api_CompareStringOrdinal Lib "kernel32" Alias "CompareStringOrdinalW" ( _
+    ByVal String1Pointer As Long, _
+    ByVal String1Length As Long, _
+    ByVal String2Pointer As Long, _
+    ByVal String2Length As Long, _
+    ByVal IgnoreCase As BOOL _
+) As CSTR_
+
+'Unicode & Locale-aware string comparison (Windows XP) _
+ <msdn.microsoft.com/en-us/library/windows/desktop/dd317759(v=vs.85).aspx>
+Private Declare Function api_CompareString Lib "kernel32" Alias "CompareStringW" ( _
+    ByVal LocaleID As Long, _
+    ByVal CompareFlags As CompareString_Flags, _
+    ByVal String1Pointer As Long, _
+    ByVal String1Length As Long, _
+    ByVal String2Pointer As Long, _
+    ByVal String2Length As Long _
+) As CSTR_
+
+'Unicode & Locale-aware string comparison (Windows Vista+) _
+ <msdn.microsoft.com/en-us/library/windows/desktop/dd317761(v=vs.85).aspx>
+Private Declare Function api_CompareStringEx Lib "kernel32" Alias "CompareStringEx" ( _
+    ByVal LocaleNamePointer As Long, _
+    ByVal CompareFlags As CompareString_Flags, _
+    ByVal String1Pointer As Long, _
+    ByVal String1Length As Long, _
+    ByVal String2Pointer As Long, _
+    ByVal String2Length As Long, _
+    ByVal VersionInfoPointer As Long, _
+    ByVal ReservedPointer As Long, _
+    ByVal Param As Long _
+) As CSTR_
+
+Private Enum CompareString_Flags
+    'Ignore case, as linguistically appropriate
+    LINGUISTIC_IGNORECASE = &H10&
+    'Ignore nonspacing characters, as linguistically appropriate
+    LINGUISTIC_IGNOREDIACRITIC = &H20&
+    'Legacy ignore case -- less accurate than LINGUISTIC_IGNORECASE
+    NORM_IGNORECASE = &H1&
+    'Treat equivilent Japanese Hiragana and Katakana as the same
+    NORM_IGNOREKANATYPE = &H10000
+    'Legacy version of `LINGUISTIC_IGNOREDIACRITIC`
+    NORM_IGNORENONSPACE = &H2&
+    'Ignore symbols and punctuation
+    NORM_IGNORESYMBOLS = &H4&
+    'Ignore the difference between half-width and full-width characters
+    NORM_IGNOREWIDTH = &H20000
+    'Use linguistic rules for casing, instead of file system rules (default)
+    NORM_LINGUISTIC_CASING = &H8000000
+    'Treat punctuation the same as symbols
+    SORT_STRINGSORT = &H1000
+End Enum
+
+'Comparison API return values; _
+ You can subtract 2 from these to get C-style values
+Private Enum CSTR_
+    CSTR_LESS_THAN = 1
+    CSTR_EQUAL = 2
+    CSTR_GREATER_THAN = 3
+End Enum
+
 'Unicode character properties: _
  ---------------------------------------------------------------------------------------
 'Returns an array of Unicode character properties for a string _
@@ -199,6 +266,10 @@ Public Enum SIXTH_ERROR
     ERR_OVERFLOW                        'Mathematical overflow
     ERR_DIVIDEBYZERO                    'Divide by Zero!
 End Enum
+
+'Some APIs are different for XP/Vista. We check the Windows version and, for speed _
+ reasons, this variable is set to 0 for Vista and above or 1 otherwise
+Private WindowsVersionCheck As Long
 
 'The Stack:
 '---------------------------------------------------------------------------------------
@@ -293,8 +364,6 @@ Private PC As Long                      'Program counter, 0-based
 Private CharToUpperCase(0 To 65535) As Integer
 'A look-up table of Unicode characters that are considered white-space
 Private CharIsWhiteSpace(0 To 65535) As Long
-'A look-up table of Unicode characters considered 'visible' (have width)
-Private CharIsVisible(0 To 65535) As Long
 
 '/// EVENTS ////////////////////////////////////////////////////////////////////////////
 
@@ -314,15 +383,8 @@ Private Sub Class_Initialize()
         Let .lLbound = 0&
     End With
     
-    'Upper-case look-up table:
+    'Windows version check:
     '-----------------------------------------------------------------------------------
-    'Begin with a straight forward list of all 2-byte UCS-2 code points
-    Dim i As Long
-    For i = 0 To &HFFFF&
-        Dim Unicode(0 To &HFFFF&) As Integer
-        If i >= 32768 Then Let Unicode(i) = i - 65536 Else Let Unicode(i) = i
-    Next i
-    
     'Get the Windows version as Windows Vista and above use alternative APIs for _
      locale-dependent methods (such as `Equals`)
     Dim VersionInfo As OSVERSIONINFO
@@ -332,11 +394,22 @@ Private Sub Class_Initialize()
      this API to always return as Windows 8.0 unless the app opts-in to correct _
      version info via manifest, but this isn't an issue to bluString as we are _
      only concerned with testing for Windows Vista+
-    Call api_GetVersionEx(VersionInfo)
+    If api_GetVersionEx(VersionInfo) = API_TRUE Then
+        If VersionInfo.MajorVersion < 6 Then Let WindowsVersionCheck = 1
+    End If
+    
+    'Upper-case look-up table:
+    '-----------------------------------------------------------------------------------
+    'Begin with a straight forward list of all 2-byte UCS-2 code points
+    Dim i As Long
+    For i = 0 To &HFFFF&
+        Dim Unicode(0 To &HFFFF&) As Integer
+        If i >= 32768 Then Let Unicode(i) = i - 65536 Else Let Unicode(i) = i
+    Next i
     
     'Use the Windows API to convert these to their linguistic upper-case equivilents
     'Check for Windows Vista and above:
-    If VersionInfo.MajorVersion > 5 Then
+    If WindowsVersionCheck = 0 Then
         'NOTE: The use of null on the first parameter causes Windows to use the _
          user's current locale, so we don't need to manually fetch the locale name
         Call api_LCMapStringEx( _
@@ -377,8 +450,9 @@ Private Sub Class_Initialize()
     'Walk the array of Unicode properties and populate the look-up tables for _
      specfic properties...
     For i = 0 To 65535
-        Let CharIsWhiteSpace(i) = ((Properties(i) And C1_SPACE) <> 0)
-        Let CharIsVisible(i) = ((Properties(i) And C1_VISIBLE) <> 0)
+        Let CharIsWhiteSpace(i) = _
+            ((Properties(i) And C1_WHITESPACE) <> 0) _
+         Or ((Properties(i) And C1_DEFINED) = 0)
     Next i
     Erase Properties
     
@@ -454,8 +528,8 @@ Public Function Parse( _
     
     Let Parse = Assemble(Source)
     
-    'TODO: Now execute the instructions...
-    Let Parse = Me.Run()
+    'Now execute the instructions...
+    If Parse = ERR_NONE Then Let Parse = Me.Run()
 End Function
 
 'Reset : Does not clear the current program, but resets the VM ready to run
@@ -680,6 +754,7 @@ Private Function Assemble( _
     Dim CommentMode As Long
     
     Dim Word As String
+    Dim WordUp As String
     
     Dim i As Long
     Do
@@ -696,6 +771,7 @@ Private Function Assemble( _
             Else
                 'Add the letter to the current Word
                 Let Word = Word & ChrW$(Char)
+                Let WordUp = WordUp & ChrW$(CharToUpperCase(Char))
             End If
             
         'Currently parsing a string or comment...
@@ -724,26 +800,27 @@ AssembleWord:
     Dim Instruction As SIXTH_WORDS
     
     'Begin with the built-in instructions
-    If Word = STR_ADD Then
+    If WordUp = STR_ADD Then
         Let Instruction = WORD_ADD
-    ElseIf Word = STR_DIV Then Let Instruction = WORD_DIV
-    ElseIf Word = STR_DROP Then Let Instruction = WORD_DROP
-    ElseIf Word = STR_DUP Then Let Instruction = WORD_DUP
-    ElseIf Word = STR_ECHO Then Let Instruction = WORD_ECHO
-    ElseIf Word = STR_END Then Let Instruction = WORD_END
-    ElseIf Word = STR_MUL Then Let Instruction = WORD_MUL
-    ElseIf Word = STR_POW Then Let Instruction = WORD_POW
-    ElseIf Word = STR_ROT Then Let Instruction = WORD_ROT
-    ElseIf Word = STR_SUB Then Let Instruction = WORD_SUB
-    ElseIf Word = STR_SWAP Then Let Instruction = WORD_SWAP
+    ElseIf WordUp = STR_DIV Then Let Instruction = WORD_DIV
+    ElseIf WordUp = STR_DROP Then Let Instruction = WORD_DROP
+    ElseIf WordUp = STR_DUP Then Let Instruction = WORD_DUP
+    ElseIf WordUp = STR_ECHO Then Let Instruction = WORD_ECHO
+    ElseIf WordUp = STR_END Then Let Instruction = WORD_END
+    ElseIf WordUp = STR_MUL Then Let Instruction = WORD_MUL
+    ElseIf WordUp = STR_POW Then Let Instruction = WORD_POW
+    ElseIf WordUp = STR_ROT Then Let Instruction = WORD_ROT
+    ElseIf WordUp = STR_SUB Then Let Instruction = WORD_SUB
+    ElseIf WordUp = STR_SWAP Then Let Instruction = WORD_SWAP
     Else
         'Check to see if the Word is already defined
-        For i = 1 To WordCount
-            If Word = Words(i).Text Then
-                Let Instruction = i
+        Dim w As Long
+        For w = 1 To WordCount
+            If Equals(Word, Words(w).Text) Then
+                Let Instruction = w
                 GoTo AddInstruction
             End If
-        Next i
+        Next w
         
         'Define a custom word
         Let WordCount = WordCount + 1
@@ -775,5 +852,41 @@ AddInstruction:
     
     'Prepare for the next Word
     Let Word = vbNullString
+    Let WordUp = vbNullString
     Return
+End Function
+
+'Equals : Case-insensitive string comparison
+'=======================================================================================
+'Word1          | First string
+'Word2          | String to compare with the first
+'---------------¦-----------------------------------------------------------------------
+'Returns        | Boolean (as Long, for speed reasons)
+'=======================================================================================
+Private Function Equals( _
+    ByRef Word1 As String, _
+    ByRef Word2 As String _
+) As Long
+    'Check for Windows Vista and above:
+    If WindowsVersionCheck = 0 Then
+        'NOTE: The use of null on the first parameter causes Windows to use the _
+         user's current locale, so we don't need to manually fetch the locale name
+        Let Equals = (api_CompareStringEx( _
+             LocaleNamePointer:=0&, _
+                  CompareFlags:=LINGUISTIC_IGNORECASE, _
+                String1Pointer:=StrPtr(Word1), String1Length:=-1, _
+                String2Pointer:=StrPtr(Word2), String2Length:=-1, _
+            VersionInfoPointer:=0&, _
+               ReservedPointer:=0&, _
+                         Param:=0& _
+        ) = CSTR_EQUAL)
+    Else
+        'Fall back to the XP-compatible API
+        Let Equals = (api_CompareString( _
+                  LocaleID:=api_GetThreadLocale(), _
+              CompareFlags:=NORM_IGNORECASE, _
+            String1Pointer:=StrPtr(Word1), String1Length:=-1, _
+            String2Pointer:=StrPtr(Word2), String2Length:=-1 _
+        ) = CSTR_EQUAL)
+    End If
 End Function
