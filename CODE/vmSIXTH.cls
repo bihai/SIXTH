@@ -241,10 +241,10 @@ Private Enum SIXTH_KIND
     KIND_LITERAL                        'A number, Param = value
     KIND_CODE                           'Program code, Param = ID
     
-    '...                                'Variables, Constants &c...
+    '...                                'Strings, Variables, Constants &c...
 End Enum
 
-'This is where the user-defined Words are stored, each program instruction is eiither _
+'This is where the user-defined Words are stored, each program instruction is either _
  a built-in Word, or an index to this list
 Private Words() As SIXTH_Word
 Private WordCount As Long
@@ -261,17 +261,19 @@ Public Enum SIXTH_WORDS
     WORD_ADD = -1                       ' +
     WORD_DIV = -2                       ' /
     WORD_DROP = -3                      'Drop top of stack
-    WORD_ECHO = -4                      'Display top of stack
-    WORD_MUL = -5                       ' *
-    WORD_POW = -6                       ' ^
-    WORD_ROT = -7                       'Rotate top three of stack
-    WORD_SUB = -8                       ' -
-    WORD_SWAP = -9                      'Swap top two of stack
+    WORD_DUP = -4                       'Duplicate top of stack
+    WORD_ECHO = -5                      'Display top of stack
+    WORD_MUL = -6                       ' *
+    WORD_POW = -7                       ' ^
+    WORD_ROT = -8                       'Rotate top three of stack
+    WORD_SUB = -9                       ' -
+    WORD_SWAP = -10                     'Swap top two of stack
 End Enum
 
 Private Const STR_ADD As String = "+"
 Private Const STR_DIV As String = "/"
 Private Const STR_DROP As String = "DROP"
+Private Const STR_DUP As String = "DUP"
 Private Const STR_ECHO As String = "."
 Private Const STR_END As String = "END"
 Private Const STR_MUL As String = "*"
@@ -330,18 +332,11 @@ Private Sub Class_Initialize()
      this API to always return as Windows 8.0 unless the app opts-in to correct _
      version info via manifest, but this isn't an issue to bluString as we are _
      only concerned with testing for Windows Vista+
-    If api_GetVersionEx(VersionInfo) = API_TRUE Then
-        '`Val`, rather than `CSng` is used here due to locale differences; _
-         `CSng("6.1")` will fail in locales that use comma as decimal separator
-        Dim WindowsVersion As Single
-        Let WindowsVersion = Val( _
-            VersionInfo.MajorVersion & "." & VersionInfo.MinorVersion _
-        )
-    End If
+    Call api_GetVersionEx(VersionInfo)
     
     'Use the Windows API to convert these to their linguistic upper-case equivilents
     'Check for Windows Vista and above:
-    If WindowsVersion >= 6 Then
+    If VersionInfo.MajorVersion > 5 Then
         'NOTE: The use of null on the first parameter causes Windows to use the _
          user's current locale, so we don't need to manually fetch the locale name
         Call api_LCMapStringEx( _
@@ -529,6 +524,15 @@ Public Function Run( _
             If SP = 0 Then GoTo ErrStackUnderflow
             Let SP = SP - 1
             
+        ElseIf Word = WORD_DUP Then
+            'Duplicate the top of the stack
+            '...........................................................................
+            'Is there anything to duplicate!?
+            If SP = 0 Then GoTo ErrStackUnderflow
+            'Push the stack down and duplicate the value
+            Let SP = SP + 1: If SP = 257 Then GoTo ErrStackOverflow
+            Let Stack(SP) = Stack(SP - 1)
+            
         ElseIf Word = WORD_ECHO Then
             '...........................................................................
             'Log the top of the stack
@@ -661,7 +665,7 @@ Private Function Assemble( _
     End With
     
     '-----------------------------------------------------------------------------------
-    'Parse Words
+    'Parse Words:
     '-----------------------------------------------------------------------------------
     'We will walk through the source code letter-by-letter and break out the words
     
@@ -724,6 +728,7 @@ AssembleWord:
         Let Instruction = WORD_ADD
     ElseIf Word = STR_DIV Then Let Instruction = WORD_DIV
     ElseIf Word = STR_DROP Then Let Instruction = WORD_DROP
+    ElseIf Word = STR_DUP Then Let Instruction = WORD_DUP
     ElseIf Word = STR_ECHO Then Let Instruction = WORD_ECHO
     ElseIf Word = STR_END Then Let Instruction = WORD_END
     ElseIf Word = STR_MUL Then Let Instruction = WORD_MUL
