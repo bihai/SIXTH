@@ -1,0 +1,11 @@
+*
+!.gitignore
+!.gitattributes
+
+!README.md
+!SYNTAX.TXT
+!LICENCE.TXT
+
+!*.vbp
+
+!CODE

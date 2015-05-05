@@ -1,0 +1,41 @@
+
+Words:
+
+        +               A + B -- C
+        -               A - B -- C
+        *               A * B -- C
+        /               A / B -- C
+        ^               A ^ B -- C
+        
+        DROP            A --
+        SWAP            A B -- B A
+        ROT             A B C -- C A B
+        
+        :               Begin function
+        ;               End function
+        
+        "..."           String literal. These are put into an integer array and the
+                        ID is pushed to the stack
+        
+        
+        
+        !               Outputs stack as a 64-bit floating-point
+        !BYTE           Outputs stack as a byte
+        !WORD           Outputs stack as a word (2-bytes)
+        !TRIP           Outputs stack as a triple (3-bytes)
+        !LONG           Outputs stack as a long (4-bytes)
+        
+        
+        
+        
+
+
+Strings:
+
+- Implied string 'stack'?
+- Using a string Word, appends it to the current string?
+
+Output selection?
+- Output to log
+- Output to a binary array?
+- Output to string? ^?
