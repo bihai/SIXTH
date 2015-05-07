@@ -64,6 +64,10 @@ Private Declare Function api_GetVersionEx Lib "kernel32" Alias "GetVersionExA" (
     ByRef VersionInfo As OSVERSIONINFO _
 ) As BOOL
 
+'Some APIs are different for XP/Vista. We check the Windows version and, for speed _
+ reasons, this variable is set to 0 for Vista and above or 1 otherwise
+Private WindowsVersionCheck As Long
+
 '---------------------------------------------------------------------------------------
 
 'Get the Locale Identifier (LCID) of this app _
@@ -112,8 +116,11 @@ Private Enum LCMAP
     LCMAP_TRADITIONAL_CHINESE = &H4000000
 End Enum
 
+'A look-up table of lower-case to upper-case Unicode characters
+Private CharToUpperCase(0 To 65535) As Integer
+
 'Comparing Strings:
-'--------------------------------------------------------------------------------------
+'---------------------------------------------------------------------------------------
 
 'Binary string comparison (case-sensitive) _
  <msdn.microsoft.com/en-us/library/windows/desktop/dd317762(v=vs.85).aspx>
@@ -216,6 +223,9 @@ Private Enum C1
     C1_VISIBLE = C1_SPACE Or C1_PUNCT Or C1_BLANK Or C1_ALPHANUM
 End Enum
 
+'A look-up table of Unicode characters that are considered white-space
+Private CharIsWhiteSpace(0 To 65535) As Long
+
 'Cast String to Array: _
  ---------------------------------------------------------------------------------------
 'By manipulating some pointers we can cast a VB string directly into an array without _
@@ -266,10 +276,6 @@ Public Enum SIXTH_ERROR
     ERR_OVERFLOW                        'Mathematical overflow
     ERR_DIVIDEBYZERO                    'Divide by Zero!
 End Enum
-
-'Some APIs are different for XP/Vista. We check the Windows version and, for speed _
- reasons, this variable is set to 0 for Vista and above or 1 otherwise
-Private WindowsVersionCheck As Long
 
 'The Stack:
 '---------------------------------------------------------------------------------------
@@ -353,17 +359,16 @@ Private Const STR_ROT As String = "ROT"
 Private Const STR_SUB As String = "-"
 Private Const STR_SWAP As String = "SWAP"
 
-Private Program() As SIXTH_WORDS
-Private ProgramLength As Long           '1-based length of the program
-Private PC As Long                      'Program counter, 0-based
-
-'Parsing / Assembling:
+'Programs:
 '---------------------------------------------------------------------------------------
 
-'A look-up table of lower-case to upper-case Unicode characters
-Private CharToUpperCase(0 To 65535) As Integer
-'A look-up table of Unicode characters that are considered white-space
-Private CharIsWhiteSpace(0 To 65535) As Long
+Private Type SIXTH_Program
+    Code() As SIXTH_WORDS
+    Length As Long                      '1-based length of the program
+End Type
+
+'Private Program As SIXTH_Program
+Private PC As Long                      'Program counter, 0-based
 
 '/// EVENTS ////////////////////////////////////////////////////////////////////////////
 
@@ -456,6 +461,7 @@ Private Sub Class_Initialize()
     Next i
     Erase Properties
     
+    'Initialise the virtual machine's empty program state
     Call Me.Clear
 End Sub
 
@@ -476,43 +482,43 @@ Public Sub Clear()
     'Clear the user-Words
     Erase Words: Let WordCount = 0
     'Clear the program code
-    Erase Program
-    ReDim Program(0 To 0) As SIXTH_WORDS
+'    Erase Program.Code
+'    ReDim Program.Code(0 To 0) As SIXTH_WORDS
 End Sub
 
 'LoadProgram
-'=======================================================================================
-'FilePath       | Path to the source code file to read and assemble
-'---------------¦-----------------------------------------------------------------------
-'Returns        | An error number
-'=======================================================================================
-Public Function LoadProgram( _
-    ByRef FilePath As String _
-) As SIXTH_ERROR
-    'Clear any existing program and reset the VM
-    Call Clear
-       
-    'Read the file
-    '-----------------------------------------------------------------------------------
-    On Error GoTo ErrFile
-    Dim FileNumber As Integer: Let FileNumber = FreeFile
-    Open FilePath For Input Lock Write As #FileNumber
-    
-    Dim Length As Long
-    Let Length = VBA.LOF(FileNumber)
-    
-    Dim Source As String
-    Let Source = StrConv(InputB(Length, FileNumber), vbUnicode)
-    
-ErrFile:
-    Close #FileNumber
-    On Error GoTo 0
-    
-    'If the file is empty, nothing can be assembled!
-    If Source = vbNullString Then Exit Function
-    
-    Call Assemble(Source)
-End Function
+''=======================================================================================
+''FilePath       | Path to the source code file to read and assemble
+''---------------¦-----------------------------------------------------------------------
+''Returns        | An error number
+''=======================================================================================
+'Public Function LoadProgram( _
+'    ByRef FilePath As String _
+') As SIXTH_ERROR
+'    'Clear any existing program and reset the VM
+'    Call Clear
+'
+'    'Read the file
+'    '-----------------------------------------------------------------------------------
+'    On Error GoTo ErrFile
+'    Dim FileNumber As Integer: Let FileNumber = FreeFile
+'    Open FilePath For Input Lock Write As #FileNumber
+'
+'    Dim Length As Long
+'    Let Length = VBA.LOF(FileNumber)
+'
+'    Dim Source As String
+'    Let Source = StrConv(InputB(Length, FileNumber), vbUnicode)
+'
+'ErrFile:
+'    Close #FileNumber
+'    On Error GoTo 0
+'
+'    'If the file is empty, nothing can be assembled!
+'    If Source = vbNullString Then Exit Function
+'
+'    Call Assemble(Source, Program)
+'End Function
 
 'Parse : Takes a VB String and assembles it as SIXTH code
 '=======================================================================================
@@ -526,10 +532,19 @@ Public Function Parse( _
     'If the text is empty, nothing can be parsed!
     If Source = vbNullString Then Exit Function
     
-    Let Parse = Assemble(Source)
+    'Create a temporary program
+    Dim TempProgram As SIXTH_Program
+    ReDim TempProgram.Code(0 To 0) As SIXTH_WORDS
+    
+    'Assemble the soure code into the temporary program space
+    Let Parse = Assemble(Source, TempProgram)
     
     'Now execute the instructions...
-    If Parse = ERR_NONE Then Let Parse = Me.Run()
+    '(the stack state remains from before)
+    If Parse = ERR_NONE Then Let Parse = Execute(TempProgram)
+    
+    'Clean up the temporary program
+    Erase TempProgram.Code
 End Function
 
 'Reset : Does not clear the current program, but resets the VM ready to run
@@ -541,28 +556,221 @@ Public Sub Reset()
     Erase Stack: Let SP = 0
 End Sub
 
-'Run
+''Run : Start the program from the beginning
+''=======================================================================================
+''Returns        | An error number
+''=======================================================================================
+'Public Function Run( _
+') As SIXTH_ERROR
+'    'Is there a program present?
+'    If Program.Length = 0 Then Exit Function
+'    'Run the program and pass back any error-code
+'    Let Run = Execute(Program)
+'End Function
+
+'/// PRIVATE ///////////////////////////////////////////////////////////////////////////
+
+'Assemble : Assemble source code into a program
 '=======================================================================================
+'Source         | Any text that will be treated as SIXTH code
+'---------------¦-----------------------------------------------------------------------
+'Returns        | An error number (e.g. if the text failed to parse/assemble)
+'=======================================================================================
+Private Function Assemble( _
+    ByRef Source As String, _
+    ByRef IntoProgram As SIXTH_Program _
+) As SIXTH_ERROR
+    'If the text is empty, nothing can be parsed!
+    If Source = vbNullString Then Exit Function
+    
+    '-----------------------------------------------------------------------------------
+    'Initialise:
+    '-----------------------------------------------------------------------------------
+    
+    'Map the VB String to an array so we can compare character codes quickly
+    Let CastStrPtr = msvbvm60_VarPtr(CastStrArr())
+    Call msvbvm60_PutMem4(CastStrPtr, VarPtr(CastStrSA1D))
+    
+    'Take the string, and attach it to our dummy array header
+    With CastStrSA1D
+        Let .pvData = StrPtr(Source)
+        Let .cElements = Len(Source)
+    End With
+    
+    '-----------------------------------------------------------------------------------
+    'Parse Words:
+    '-----------------------------------------------------------------------------------
+    'We will walk through the source code letter-by-letter and break out the words
+    
+    Dim Line As Long: Let Line = 1
+    Dim Col As Long: Let Col = 1
+    
+    'In Forth, all whitespace is ignored and considered a word-break, including _
+     within strings and comments. In SIXTH we want to include whitespace when walking _
+     strings and comments because a.) we support Unicode in text and b.) we want to _
+     discard comments wholesale and not tokenise them as indivdual words
+    Dim Whitespace As Long
+    Dim CommentMode As Long
+    
+    Dim Word As String
+    Dim WordUp As String
+    
+    Dim i As Long
+    Do
+        Dim Char As Integer
+        Let Char = CastStrArr(i)
+        
+        'If outside of strings and comments, we will take whitespace as word-break
+        If Whitespace = 0 Then
+            '...........................................................................
+            'Is the current letter whitespace?
+            If CharIsWhiteSpace(Char) Then
+                'If a Word is defined, break here
+                If LenB(Word) > 0 Then GoSub AssembleWord
+            Else
+                'Add the letter to the current Word
+                Let Word = Word & ChrW$(Char)
+                Let WordUp = WordUp & ChrW$(CharToUpperCase(Char))
+            End If
+            
+        'Currently parsing a string or comment...
+        Else
+            '...........................................................................
+        
+        End If
+        
+        'Move on to the next character
+        Let i = i + 1
+    Loop While i < Len(Source)
+    
+    If LenB(Word) > 0 Then GoSub AssembleWord
+    
+    'Clean up our array hacking (for casting a string to an array) _
+     otherwise VB will crash when it frees up the memory
+    Call msvbvm60_PutMem4(CastStrPtr, 0&)
+    Erase CastStrArr
+    
+    Exit Function
+    
+    '-----------------------------------------------------------------------------------
+    'Assemble:
+    '-----------------------------------------------------------------------------------
+AssembleWord:
+    Dim Instruction As SIXTH_WORDS
+    
+    'Begin with the built-in instructions
+    If WordUp = STR_ADD Then
+        Let Instruction = WORD_ADD
+    ElseIf WordUp = STR_DIV Then Let Instruction = WORD_DIV
+    ElseIf WordUp = STR_DROP Then Let Instruction = WORD_DROP
+    ElseIf WordUp = STR_DUP Then Let Instruction = WORD_DUP
+    ElseIf WordUp = STR_ECHO Then Let Instruction = WORD_ECHO
+    ElseIf WordUp = STR_END Then Let Instruction = WORD_END
+    ElseIf WordUp = STR_MUL Then Let Instruction = WORD_MUL
+    ElseIf WordUp = STR_POW Then Let Instruction = WORD_POW
+    ElseIf WordUp = STR_ROT Then Let Instruction = WORD_ROT
+    ElseIf WordUp = STR_SUB Then Let Instruction = WORD_SUB
+    ElseIf WordUp = STR_SWAP Then Let Instruction = WORD_SWAP
+    Else
+        'Check to see if the Word is already defined
+        Dim w As Long
+        For w = 1 To WordCount
+            If Equals(Word, Words(w).Text) Then
+                Let Instruction = w
+                GoTo AddInstruction
+            End If
+        Next w
+        
+        'Define a custom word
+        Let WordCount = WordCount + 1
+        ReDim Preserve Words(1 To WordCount)
+        
+        If IsNumeric(Word) Then
+            Let Words(WordCount).Kind = KIND_LITERAL
+            Let Words(WordCount).Text = Word
+            Let Words(WordCount).Param = CDbl(Word)
+            Let Instruction = WordCount
+        Else
+            Stop
+        End If
+    End If
+    
+    'So that we don't have to check for the end of the program all the time, we always _
+     make the program 1 instruction longer and cap it with END. Thus the program will _
+     naturally come to a halt without having to check for an out-of-bounds array check _
+     every execute cycle
+AddInstruction:
+    
+    'Assign the instruction
+    Let IntoProgram.Code(IntoProgram.Length) = Instruction
+    'Increase the length of the program
+    Let IntoProgram.Length = IntoProgram.Length + 1
+    ReDim Preserve IntoProgram.Code(0 To IntoProgram.Length) As SIXTH_WORDS
+    'Cap the program with the END instruction
+    Let IntoProgram.Code(IntoProgram.Length) = WORD_END
+    
+    'Prepare for the next Word
+    Let Word = vbNullString
+    Let WordUp = vbNullString
+    Return
+End Function
+
+'Equals : Case-insensitive string comparison
+'=======================================================================================
+'Word1          | First string
+'Word2          | String to compare with the first
+'---------------¦-----------------------------------------------------------------------
+'Returns        | Boolean (as Long, for speed reasons)
+'=======================================================================================
+Private Function Equals( _
+    ByRef Word1 As String, _
+    ByRef Word2 As String _
+) As Long
+    'Check for Windows Vista and above:
+    If WindowsVersionCheck = 0 Then
+        'NOTE: The use of null on the first parameter causes Windows to use the _
+         user's current locale, so we don't need to manually fetch the locale name
+        Let Equals = (api_CompareStringEx( _
+             LocaleNamePointer:=0&, _
+                  CompareFlags:=LINGUISTIC_IGNORECASE, _
+                String1Pointer:=StrPtr(Word1), String1Length:=-1, _
+                String2Pointer:=StrPtr(Word2), String2Length:=-1, _
+            VersionInfoPointer:=0&, _
+               ReservedPointer:=0&, _
+                         Param:=0& _
+        ) = CSTR_EQUAL)
+    Else
+        'Fall back to the XP-compatible API
+        Let Equals = (api_CompareString( _
+                  LocaleID:=api_GetThreadLocale(), _
+              CompareFlags:=NORM_IGNORECASE, _
+            String1Pointer:=StrPtr(Word1), String1Length:=-1, _
+            String2Pointer:=StrPtr(Word2), String2Length:=-1 _
+        ) = CSTR_EQUAL)
+    End If
+End Function
+
+'Execute : The main fetch-execute cycle
+'=======================================================================================
+'Instructions   | An array of Word IDs to execute (program code)
+'PC             | "Program Counter"; where to begin executing in the array
+'---------------¦-----------------------------------------------------------------------
 'Returns        | An error number
 '=======================================================================================
-Public Function Run( _
+Private Function Execute( _
+             ByRef Instructions As SIXTH_Program, _
+    Optional ByRef PC As Long = 0 _
 ) As SIXTH_ERROR
-    'Is there a program present?
-    If ProgramLength = 0 Then Exit Function
-    
     'These are temporary holders for values popped off the stack for calculations
     Dim A As Double
     Dim B As Double
     Dim C As Double
     
-    'Rewind the program
-    Call Reset
-    
     'Execute:
     '-----------------------------------------------------------------------------------
     Do
         Dim Word As SIXTH_WORDS
-        Let Word = Program(PC)
+        Let Word = Instructions.Code(PC)
         
         'NOTE: We'll be doing as much as possible in-line (e.g. stack operations), _
          purely for speed reasons. In tight loops, function calls are slow
@@ -701,192 +909,11 @@ Public Function Run( _
     
     '-----------------------------------------------------------------------------------
 ErrStackUnderflow:
-    Let Run = ERR_STACKUNDERFLOW:   Exit Function
+    Let Execute = ERR_STACKUNDERFLOW:   Exit Function
 ErrStackOverflow:
-    Let Run = ERR_STACKOVERFLOW:    Exit Function
+    Let Execute = ERR_STACKOVERFLOW:    Exit Function
 ErrOverflow:
-    Let Run = ERR_OVERFLOW:         Exit Function
+    Let Execute = ERR_OVERFLOW:         Exit Function
 ErrDivideByZero:
-    Let Run = ERR_DIVIDEBYZERO:     Exit Function
-End Function
-
-'/// PRIVATE ///////////////////////////////////////////////////////////////////////////
-
-'Assemble : Assemble source code into a program
-'=======================================================================================
-'Source         | Any text that will be treated as SIXTH code
-'---------------¦-----------------------------------------------------------------------
-'Returns        | An error number (e.g. if the text failed to parse/assemble)
-'=======================================================================================
-Private Function Assemble( _
-    ByRef Source As String _
-) As SIXTH_ERROR
-    'If the text is empty, nothing can be parsed!
-    If Source = vbNullString Then Exit Function
-    
-    '-----------------------------------------------------------------------------------
-    'Initialise:
-    '-----------------------------------------------------------------------------------
-    
-    'Map the VB String to an array so we can compare character codes quickly
-    Let CastStrPtr = msvbvm60_VarPtr(CastStrArr())
-    Call msvbvm60_PutMem4(CastStrPtr, VarPtr(CastStrSA1D))
-    
-    'Take the string, and attach it to our dummy array header
-    With CastStrSA1D
-        Let .pvData = StrPtr(Source)
-        Let .cElements = Len(Source)
-    End With
-    
-    '-----------------------------------------------------------------------------------
-    'Parse Words:
-    '-----------------------------------------------------------------------------------
-    'We will walk through the source code letter-by-letter and break out the words
-    
-    Dim Line As Long: Let Line = 1
-    Dim Col As Long: Let Col = 1
-    
-    'In Forth, all whitespace is ignored and considered a word-break, including _
-     within strings and comments. In SIXTH we want to include whitespace when walking _
-     strings and comments because a.) we support Unicode in text and b.) we want to _
-     discard comments wholesale and not tokenise them as indivdual words
-    Dim Whitespace As Long
-    Dim CommentMode As Long
-    
-    Dim Word As String
-    Dim WordUp As String
-    
-    Dim i As Long
-    Do
-        Dim Char As Integer
-        Let Char = CastStrArr(i)
-        
-        'If outside of strings and comments, we will take whitespace as word-break
-        If Whitespace = 0 Then
-            '...........................................................................
-            'Is the current letter whitespace?
-            If CharIsWhiteSpace(Char) Then
-                'If a Word is defined, break here
-                If LenB(Word) > 0 Then GoSub AssembleWord
-            Else
-                'Add the letter to the current Word
-                Let Word = Word & ChrW$(Char)
-                Let WordUp = WordUp & ChrW$(CharToUpperCase(Char))
-            End If
-            
-        'Currently parsing a string or comment...
-        Else
-            '...........................................................................
-        
-        End If
-        
-        'Move on to the next character
-        Let i = i + 1
-    Loop While i < Len(Source)
-    
-    If LenB(Word) > 0 Then GoSub AssembleWord
-    
-    'Clean up our array hacking (for casting a string to an array) _
-     otherwise VB will crash when it frees up the memory
-    Call msvbvm60_PutMem4(CastStrPtr, 0&)
-    Erase CastStrArr
-    
-    Exit Function
-    
-    '-----------------------------------------------------------------------------------
-    'Assemble:
-    '-----------------------------------------------------------------------------------
-AssembleWord:
-    Dim Instruction As SIXTH_WORDS
-    
-    'Begin with the built-in instructions
-    If WordUp = STR_ADD Then
-        Let Instruction = WORD_ADD
-    ElseIf WordUp = STR_DIV Then Let Instruction = WORD_DIV
-    ElseIf WordUp = STR_DROP Then Let Instruction = WORD_DROP
-    ElseIf WordUp = STR_DUP Then Let Instruction = WORD_DUP
-    ElseIf WordUp = STR_ECHO Then Let Instruction = WORD_ECHO
-    ElseIf WordUp = STR_END Then Let Instruction = WORD_END
-    ElseIf WordUp = STR_MUL Then Let Instruction = WORD_MUL
-    ElseIf WordUp = STR_POW Then Let Instruction = WORD_POW
-    ElseIf WordUp = STR_ROT Then Let Instruction = WORD_ROT
-    ElseIf WordUp = STR_SUB Then Let Instruction = WORD_SUB
-    ElseIf WordUp = STR_SWAP Then Let Instruction = WORD_SWAP
-    Else
-        'Check to see if the Word is already defined
-        Dim w As Long
-        For w = 1 To WordCount
-            If Equals(Word, Words(w).Text) Then
-                Let Instruction = w
-                GoTo AddInstruction
-            End If
-        Next w
-        
-        'Define a custom word
-        Let WordCount = WordCount + 1
-        ReDim Preserve Words(1 To WordCount)
-        
-        If IsNumeric(Word) Then
-            Let Words(WordCount).Kind = KIND_LITERAL
-            Let Words(WordCount).Text = Word
-            Let Words(WordCount).Param = CDbl(Word)
-            Let Instruction = WordCount
-        Else
-            Stop
-        End If
-    End If
-    
-    'So that we don't have to check for the end of the program all the time, we always _
-     make the program 1 instruction longer and cap it with END. Thus the program will _
-     naturally come to a halt without having to check for an out-of-bounds array check _
-     every execute cycle
-AddInstruction:
-    
-    'Assign the instruction
-    Let Program(ProgramLength) = Instruction
-    'Increase the length of the program
-    Let ProgramLength = ProgramLength + 1
-    ReDim Preserve Program(0 To ProgramLength) As SIXTH_WORDS
-    'Cap the program with the END instruction
-    Let Program(ProgramLength) = WORD_END
-    
-    'Prepare for the next Word
-    Let Word = vbNullString
-    Let WordUp = vbNullString
-    Return
-End Function
-
-'Equals : Case-insensitive string comparison
-'=======================================================================================
-'Word1          | First string
-'Word2          | String to compare with the first
-'---------------¦-----------------------------------------------------------------------
-'Returns        | Boolean (as Long, for speed reasons)
-'=======================================================================================
-Private Function Equals( _
-    ByRef Word1 As String, _
-    ByRef Word2 As String _
-) As Long
-    'Check for Windows Vista and above:
-    If WindowsVersionCheck = 0 Then
-        'NOTE: The use of null on the first parameter causes Windows to use the _
-         user's current locale, so we don't need to manually fetch the locale name
-        Let Equals = (api_CompareStringEx( _
-             LocaleNamePointer:=0&, _
-                  CompareFlags:=LINGUISTIC_IGNORECASE, _
-                String1Pointer:=StrPtr(Word1), String1Length:=-1, _
-                String2Pointer:=StrPtr(Word2), String2Length:=-1, _
-            VersionInfoPointer:=0&, _
-               ReservedPointer:=0&, _
-                         Param:=0& _
-        ) = CSTR_EQUAL)
-    Else
-        'Fall back to the XP-compatible API
-        Let Equals = (api_CompareString( _
-                  LocaleID:=api_GetThreadLocale(), _
-              CompareFlags:=NORM_IGNORECASE, _
-            String1Pointer:=StrPtr(Word1), String1Length:=-1, _
-            String2Pointer:=StrPtr(Word2), String2Length:=-1 _
-        ) = CSTR_EQUAL)
-    End If
+    Let Execute = ERR_DIVIDEBYZERO:     Exit Function
 End Function

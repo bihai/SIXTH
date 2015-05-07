@@ -46,18 +46,26 @@ Private Sub Class_Initialize()
     Call Con.WriteLine("  SIXTH: A VB6 Forth-like compiler & runtime; Version " & App.Major & "." & App.Minor & "," & App.Revision)
     Call Con.WriteLine("  Copyright (C) Kroc Camen, 2015")
     Call Con.WriteLine
+    Let Con.ForeColor = conMagenta
+    Call Con.WriteLine("  -- Press Ctrl+C to quit --")
+    Call Con.WriteLine
     
 GetInput:
+    '-----------------------------------------------------------------------------------
+    Let Con.ForeColor = conWhiteHi
     Call Con.WriteLine("> ", False)
     Let Con.ForeColor = conWhite
     
     Dim Msg As String
     Let Msg = Con.ReadLine
-    Call Con.WriteLine
     
     Dim Err As SIXTH_ERROR
     Let Err = VM.Parse(Msg)
+    Let Con.ExitCode = Err
     
+    If Con.Break Then GoTo Finish
+    
+    '-----------------------------------------------------------------------------------
     Call Con.WriteLine
     Let Con.ForeColor = conWhite
     
@@ -84,7 +92,10 @@ GetInput:
             
     End Select
     
-    Let Con.ExitCode = Err
+    GoTo GetInput
+    
+Finish:
+    '-----------------------------------------------------------------------------------
     Set VM = Nothing
 End Sub
 
