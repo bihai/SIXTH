@@ -1,42 +1,84 @@
-
 Words:
+========================================================================================
+Everything is a function. A number is just a function that pushes that number onto the
+Stack. A Variable is a function that pushes its contents on to the Stack.
 
+Meta:
+        \ ...                                   Line-comment
+        ( ...)                                  Multi-part comment
+        
+Math:     
         +               A + B -- C
         -               A - B -- C
         *               A * B -- C
         /               A / B -- C
         ^               A ^ B -- C
         
+Stack:
         DUP             A -- A A
         DROP            A --
+        NIP             A B -- B                (drops the 2nd item)
         SWAP            A B -- B A
-        ROT             A B C -- C A B
+        ROT             A B C -- B C A
         
         :               Begin function
         ;               End function
         
-        "..."           String literal. These are put into an integer array and the
-                        ID is pushed to the stack
+        "..."           String literal
         
         
-        
-        !               Outputs stack as a 64-bit floating-point
-        !BYTE           Outputs stack as a byte
-        !WORD           Outputs stack as a word (2-bytes)
-        !TRIP           Outputs stack as a triple (3-bytes)
-        !LONG           Outputs stack as a long (4-bytes)
-        
-        
-        
-        
+Conditionals:
+        A comparison is done first, placing a flag (true/false) on the stack
 
+        =               A B -- C
+        <>              A B -- C
+        >               A B -- C
+        >=              A B -- C
+        <               A B -- C
+        <=              A B -- C
+        
+        =0              A -- B
+        <>0             A -- B
+        >0              A -- B
+        
+An IF is merely a conditional function, run if the top-of-stack is Truthy
+(this does not consume the stack?)
+        
+        :? ... ;
+        
+Structured Data:
+        
+        DATA                            Creates a data structure?
+        
+        When data is read from / written to a data structure, the structure's internal
+        pointer is automatically moved forward
+        
+        !BYTE                           Writes a byte
+        !WORD                           Writes a word (2-bytes)
+        !TRIP                           Writes a triple (3-bytes)
+        !LONG                           Writes a long (4-bytes)
+        !SING                           Writes a float (32-bit)
+        !DUBL                           Writes a float (64-bit)
+        
+        
+Any undefined Word is placed on top of the Stack
+E.g.
 
-Strings:
+        NewWord
+        
+Places a token on top of the Stack to represent the undefined `NewWord`.
+Using store `!` sets the undefined word to the next item on the Stack.
+E.g.
+        
+        100 NewWord !
+        
+Sets `NewWord` to 100.
 
-- Implied string 'stack'?
-- Using a string Word, appends it to the current string?
-
-Output selection?
-- Output to log
-- Output to a binary array?
-- Output to string? ^?
+To create a data structure
+        
+        ()                              Creates a new, empty list
+        
+        EXEC                            Executes the function on top of the Stack
+        
+        {}                              Creates a new binary
+        

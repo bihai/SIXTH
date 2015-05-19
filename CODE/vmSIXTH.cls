@@ -277,6 +277,21 @@ Public Enum SIXTH_ERROR
     ERR_DIVIDEBYZERO                    'Divide by Zero!
 End Enum
 
+'Assembling:
+'---------------------------------------------------------------------------------------
+'SIXTH includes an assembler so that you can produce portable source code that you can _
+ get into SXITH. You can always save a binary 'snapshot' of your program for faster _
+ loading in the future
+
+Private Type SIXTH_AssembleWord
+    Word As String
+    Line As Long
+    Col As Long
+End Type
+
+Private WordList() As SIXTH_AssembleWord
+Private WordListLength As Long
+
 'The Stack:
 '---------------------------------------------------------------------------------------
 
@@ -286,13 +301,14 @@ End Enum
  off the top, lifting the value below to the top
 
 'For simplicity, the stack always consists of 64-bit Double values beacuse these _
- can hold 8, 16 & 32-bit signed and unsigned numbers and also 32-bit floating-points
+ can hold 8, 16 & 32-bit signed and unsigned numbers and also 32-bit floating-point _
+ numbers without loss of precision. Thus we keep things simple to manage
 
 'The stack is 1-based so that we can easily determine an empty stack (0) _
  rather than managing a 0th element that may or may not be unpopulated
 
 Private Stack(1 To 256) As Double       'Stack storage
-Private SP As Long                      'Stack Pointer
+Private SP As Long                      'Stack Pointer (current depth of stack)
 
 'Word Definitions:
 '---------------------------------------------------------------------------------------
@@ -313,17 +329,19 @@ Private Type SIXTH_Word
 End Type
 
 Private Enum SIXTH_KIND
-    KIND_UNKNOWN                        'Unset
+    KIND_UNSET                          'Unset, will need to be written to
     
     KIND_LITERAL                        'A number, Param = value
-    KIND_CODE                           'Program code, Param = ID
+    KIND_LIST                           'List (i.e. program code)
+    KIND_BINARY                         'Binary data
+    KIND_STRING                         'Text
     
-    '...                                'Strings, Variables, Constants &c...
+    '...                                'Variables, Constants &c...?
 End Enum
 
 'This is where the user-defined Words are stored, each program instruction is either _
  a built-in Word, or an index to this list
-Private Words() As SIXTH_Word
+Private Dictionary() As SIXTH_Word
 Private WordCount As Long
 
 'Built-in Words:
@@ -335,16 +353,18 @@ Private WordCount As Long
 Public Enum SIXTH_WORDS
     WORD_END = 0                        'End the program
     
-    WORD_ADD = -1                       ' +
-    WORD_DIV = -2                       ' /
-    WORD_DROP = -3                      'Drop top of stack
-    WORD_DUP = -4                       'Duplicate top of stack
-    WORD_ECHO = -5                      'Display top of stack
-    WORD_MUL = -6                       ' *
-    WORD_POW = -7                       ' ^
-    WORD_ROT = -8                       'Rotate top three of stack
-    WORD_SUB = -9                       ' -
-    WORD_SWAP = -10                     'Swap top two of stack
+    WORD_RETURN = -1                    'Return from Word (i.e. `;`)
+    
+    WORD_ADD = -2                       ' +
+    WORD_DIV = -3                       ' /
+    WORD_DROP = -4                      'Drop top of stack
+    WORD_DUP = -5                       'Duplicate top of stack
+    WORD_ECHO = -6                      'Display top of stack
+    WORD_MUL = -7                       ' *
+    WORD_POW = -8                       ' ^
+    WORD_ROT = -9                       'Rotate top three of stack
+    WORD_SUB = -10                      ' -
+    WORD_SWAP = -11                     'Swap top two of stack
 End Enum
 
 Private Const STR_ADD As String = "+"
@@ -355,19 +375,23 @@ Private Const STR_ECHO As String = "."
 Private Const STR_END As String = "END"
 Private Const STR_MUL As String = "*"
 Private Const STR_POW As String = "^"
+Private Const STR_RETURN As String = ";"
 Private Const STR_ROT As String = "ROT"
 Private Const STR_SUB As String = "-"
 Private Const STR_SWAP As String = "SWAP"
 
-'Programs:
+'Lists:
 '---------------------------------------------------------------------------------------
 
-Private Type SIXTH_Program
-    Code() As SIXTH_WORDS
-    Length As Long                      '1-based length of the program
+Private Type SIXTH_List
+    Items() As SIXTH_WORDS
+    Length As Long                      '1-based length of the list
+    Index As Long                       'Current read/write location in the list
 End Type
 
-'Private Program As SIXTH_Program
+Private Lists() As SIXTH_List
+Private ListCount As Long
+
 Private PC As Long                      'Program counter, 0-based
 
 '/// EVENTS ////////////////////////////////////////////////////////////////////////////
@@ -395,10 +419,10 @@ Private Sub Class_Initialize()
     Dim VersionInfo As OSVERSIONINFO
     Let VersionInfo.SizeOfMe = Len(VersionInfo)
     'NOTE: If the app is in compatibility mode, this will return the compatible _
-     Windows version, not the actual version. Windows 8.1 and above also cause _
-     this API to always return as Windows 8.0 unless the app opts-in to correct _
-     version info via manifest, but this isn't an issue to bluString as we are _
-     only concerned with testing for Windows Vista+
+     Windows version, not the actual version. Windows 8.1 and above also cause this _
+     API to always return as Windows 8.0 unless the app opts-in to correct version _
+     info via manifest, but this isn't an issue as we are only concerned with testing _
+     for Windows Vista+
     If api_GetVersionEx(VersionInfo) = API_TRUE Then
         If VersionInfo.MajorVersion < 6 Then Let WindowsVersionCheck = 1
     End If
@@ -480,10 +504,9 @@ Public Sub Clear()
     'Reset the machine's run-state
     Call Reset
     'Clear the user-Words
-    Erase Words: Let WordCount = 0
+    Erase Dictionary: Let WordCount = 0
     'Clear the program code
-'    Erase Program.Code
-'    ReDim Program.Code(0 To 0) As SIXTH_WORDS
+    Erase Lists: Let ListCount = 0
 End Sub
 
 'LoadProgram
@@ -533,8 +556,8 @@ Public Function Parse( _
     If Source = vbNullString Then Exit Function
     
     'Create a temporary program
-    Dim TempProgram As SIXTH_Program
-    ReDim TempProgram.Code(0 To 0) As SIXTH_WORDS
+    Dim TempProgram As SIXTH_List
+    ReDim TempProgram.Items(0 To 0) As SIXTH_WORDS
     
     'Assemble the soure code into the temporary program space
     Let Parse = Assemble(Source, TempProgram)
@@ -544,7 +567,7 @@ Public Function Parse( _
     If Parse = ERR_NONE Then Let Parse = Execute(TempProgram)
     
     'Clean up the temporary program
-    Erase TempProgram.Code
+    Erase TempProgram.Items
 End Function
 
 'Reset : Does not clear the current program, but resets the VM ready to run
@@ -572,147 +595,26 @@ End Sub
 
 'Assemble : Assemble source code into a program
 '=======================================================================================
-'Source         | Any text that will be treated as SIXTH code
+'Text           | Any text that will be treated as SIXTH code
 '---------------¦-----------------------------------------------------------------------
 'Returns        | An error number (e.g. if the text failed to parse/assemble)
 '=======================================================================================
 Private Function Assemble( _
-    ByRef Source As String, _
-    ByRef IntoProgram As SIXTH_Program _
+    ByRef Text As String, _
+    ByRef List As SIXTH_List _
 ) As SIXTH_ERROR
     'If the text is empty, nothing can be parsed!
-    If Source = vbNullString Then Exit Function
+    If Text = vbNullString Then Exit Function
     
-    '-----------------------------------------------------------------------------------
-    'Initialise:
-    '-----------------------------------------------------------------------------------
+    Let Assemble = Tokenise(Text, List)
     
-    'Map the VB String to an array so we can compare character codes quickly
-    Let CastStrPtr = msvbvm60_VarPtr(CastStrArr())
-    Call msvbvm60_PutMem4(CastStrPtr, VarPtr(CastStrSA1D))
     
-    'Take the string, and attach it to our dummy array header
-    With CastStrSA1D
-        Let .pvData = StrPtr(Source)
-        Let .cElements = Len(Source)
-    End With
+End Function
+
+'AssembleWord
+'=======================================================================================
+Private Function AssembleWord()
     
-    '-----------------------------------------------------------------------------------
-    'Parse Words:
-    '-----------------------------------------------------------------------------------
-    'We will walk through the source code letter-by-letter and break out the words
-    
-    Dim Line As Long: Let Line = 1
-    Dim Col As Long: Let Col = 1
-    
-    'In Forth, all whitespace is ignored and considered a word-break, including _
-     within strings and comments. In SIXTH we want to include whitespace when walking _
-     strings and comments because a.) we support Unicode in text and b.) we want to _
-     discard comments wholesale and not tokenise them as indivdual words
-    Dim Whitespace As Long
-    Dim CommentMode As Long
-    
-    Dim Word As String
-    Dim WordUp As String
-    
-    Dim i As Long
-    Do
-        Dim Char As Integer
-        Let Char = CastStrArr(i)
-        
-        'If outside of strings and comments, we will take whitespace as word-break
-        If Whitespace = 0 Then
-            '...........................................................................
-            'Is the current letter whitespace?
-            If CharIsWhiteSpace(Char) Then
-                'If a Word is defined, break here
-                If LenB(Word) > 0 Then GoSub AssembleWord
-            Else
-                'Add the letter to the current Word
-                Let Word = Word & ChrW$(Char)
-                Let WordUp = WordUp & ChrW$(CharToUpperCase(Char))
-            End If
-            
-        'Currently parsing a string or comment...
-        Else
-            '...........................................................................
-        
-        End If
-        
-        'Move on to the next character
-        Let i = i + 1
-    Loop While i < Len(Source)
-    
-    If LenB(Word) > 0 Then GoSub AssembleWord
-    
-    'Clean up our array hacking (for casting a string to an array) _
-     otherwise VB will crash when it frees up the memory
-    Call msvbvm60_PutMem4(CastStrPtr, 0&)
-    Erase CastStrArr
-    
-    Exit Function
-    
-    '-----------------------------------------------------------------------------------
-    'Assemble:
-    '-----------------------------------------------------------------------------------
-AssembleWord:
-    Dim Instruction As SIXTH_WORDS
-    
-    'Begin with the built-in instructions
-    If WordUp = STR_ADD Then
-        Let Instruction = WORD_ADD
-    ElseIf WordUp = STR_DIV Then Let Instruction = WORD_DIV
-    ElseIf WordUp = STR_DROP Then Let Instruction = WORD_DROP
-    ElseIf WordUp = STR_DUP Then Let Instruction = WORD_DUP
-    ElseIf WordUp = STR_ECHO Then Let Instruction = WORD_ECHO
-    ElseIf WordUp = STR_END Then Let Instruction = WORD_END
-    ElseIf WordUp = STR_MUL Then Let Instruction = WORD_MUL
-    ElseIf WordUp = STR_POW Then Let Instruction = WORD_POW
-    ElseIf WordUp = STR_ROT Then Let Instruction = WORD_ROT
-    ElseIf WordUp = STR_SUB Then Let Instruction = WORD_SUB
-    ElseIf WordUp = STR_SWAP Then Let Instruction = WORD_SWAP
-    Else
-        'Check to see if the Word is already defined
-        Dim w As Long
-        For w = 1 To WordCount
-            If Equals(Word, Words(w).Text) Then
-                Let Instruction = w
-                GoTo AddInstruction
-            End If
-        Next w
-        
-        'Define a custom word
-        Let WordCount = WordCount + 1
-        ReDim Preserve Words(1 To WordCount)
-        
-        If IsNumeric(Word) Then
-            Let Words(WordCount).Kind = KIND_LITERAL
-            Let Words(WordCount).Text = Word
-            Let Words(WordCount).Param = CDbl(Word)
-            Let Instruction = WordCount
-        Else
-            Stop
-        End If
-    End If
-    
-    'So that we don't have to check for the end of the program all the time, we always _
-     make the program 1 instruction longer and cap it with END. Thus the program will _
-     naturally come to a halt without having to check for an out-of-bounds array check _
-     every execute cycle
-AddInstruction:
-    
-    'Assign the instruction
-    Let IntoProgram.Code(IntoProgram.Length) = Instruction
-    'Increase the length of the program
-    Let IntoProgram.Length = IntoProgram.Length + 1
-    ReDim Preserve IntoProgram.Code(0 To IntoProgram.Length) As SIXTH_WORDS
-    'Cap the program with the END instruction
-    Let IntoProgram.Code(IntoProgram.Length) = WORD_END
-    
-    'Prepare for the next Word
-    Let Word = vbNullString
-    Let WordUp = vbNullString
-    Return
 End Function
 
 'Equals : Case-insensitive string comparison
@@ -758,7 +660,7 @@ End Function
 'Returns        | An error number
 '=======================================================================================
 Private Function Execute( _
-             ByRef Instructions As SIXTH_Program, _
+             ByRef Instructions As SIXTH_List, _
     Optional ByRef PC As Long = 0 _
 ) As SIXTH_ERROR
     'These are temporary holders for values popped off the stack for calculations
@@ -770,7 +672,7 @@ Private Function Execute( _
     '-----------------------------------------------------------------------------------
     Do
         Dim Word As SIXTH_WORDS
-        Let Word = Instructions.Code(PC)
+        Let Word = Instructions.Items(PC)
         
         'NOTE: We'll be doing as much as possible in-line (e.g. stack operations), _
          purely for speed reasons. In tight loops, function calls are slow
@@ -817,9 +719,10 @@ Private Function Execute( _
             
         ElseIf Word = WORD_ECHO Then
             '...........................................................................
-            'Log the top of the stack
+            'Output the top of the stack (consumes stack)
             If SP = 0 Then GoTo ErrStackUnderflow
             RaiseEvent Log(CStr(Stack(SP)))
+            Let SP = SP - 1
             
         ElseIf Word = WORD_END Then
             '...........................................................................
@@ -890,14 +793,21 @@ Private Function Execute( _
             
         Else
             '...........................................................................
-            'A custom word
+            'A custom Word
             
             Dim Kind As SIXTH_KIND
-            Let Kind = Words(Word).Kind
+            Let Kind = Dictionary(Word).Kind
             
+            'Number literal -- push the number to the Stack
             If Kind = KIND_LITERAL Then
                 Let SP = SP + 1: If SP = 257 Then GoTo ErrStackOverflow
-                Let Stack(SP) = Words(Word).Param
+                Let Stack(SP) = Dictionary(Word).Param
+            
+            ElseIf Kind = KIND_LIST Then
+                'TODO
+            Else
+                'We are trying to execute an undefined Word!
+                Stop
             End If
             
         End If
@@ -916,4 +826,139 @@ ErrOverflow:
     Let Execute = ERR_OVERFLOW:         Exit Function
 ErrDivideByZero:
     Let Execute = ERR_DIVIDEBYZERO:     Exit Function
+End Function
+
+'Tokenise : Takes a String and breaks out the Words
+'=======================================================================================
+'=======================================================================================
+Private Function Tokenise( _
+    ByRef Text As String, _
+    ByRef ReturnList As SIXTH_List _
+) As SIXTH_ERROR
+    'If the text is empty, nothing can be parsed!
+    If Text = vbNullString Then Exit Function
+    
+    'Initialise:
+    '-----------------------------------------------------------------------------------
+    
+    'Map the VB String to an array so we can compare character codes quickly
+    Let CastStrPtr = msvbvm60_VarPtr(CastStrArr())
+    Call msvbvm60_PutMem4(CastStrPtr, VarPtr(CastStrSA1D))
+    
+    'Take the string, and attach it to our dummy array header
+    Dim Len_Text As Long
+    Let Len_Text = Len(Text)
+    Let CastStrSA1D.pvData = StrPtr(Text)
+    Let CastStrSA1D.cElements = Len_Text
+    
+    'Parse Words:
+    '-----------------------------------------------------------------------------------
+    'We will walk through the source code letter-by-letter and break out the words
+    
+    Dim Line As Long: Let Line = 1
+    Dim Col As Long: Let Col = 1
+    
+    'In Forth, all whitespace is ignored and considered a word-break, including _
+     within strings and comments. In SIXTH we want to include whitespace when walking _
+     strings and comments because a.) we support Unicode in text and b.) we want to _
+     discard comments wholesale and not tokenise them as indivdual words
+    Dim Whitespace As Long
+    Dim CommentMode As Long
+    
+    Dim WordStr As String
+    Dim WordStrUCase As String
+    
+    Dim i As Long
+    Do
+        Dim Char As Integer
+        Let Char = CastStrArr(i)
+        
+        'If outside of strings and comments, we will take whitespace as word-break
+        If Whitespace = 0 Then
+            '...........................................................................
+            'Is the current letter whitespace?
+            If CharIsWhiteSpace(Char) Then
+                'If a Word is defined, break here
+                If LenB(WordStr) > 0 Then GoSub TokenWord
+            Else
+                'Add the letter to the current Word
+                Let WordStr = WordStr & ChrW$(Char)
+                Let WordStrUCase = WordStrUCase & ChrW$(CharToUpperCase(Char))
+            End If
+            
+        'Currently parsing a string or comment...
+        Else
+            '...........................................................................
+        
+        End If
+        
+        'Move on to the next character
+        Let i = i + 1
+    Loop While i < Len_Text
+    
+    If LenB(WordStr) <> 0 Then GoSub TokenWord
+    
+    'Clean up our array hacking (for casting a string to an array) _
+     otherwise VB will crash when it frees up the memory
+    Call msvbvm60_PutMem4(CastStrPtr, 0&)
+    Erase CastStrArr
+    
+    Exit Function
+    
+TokenWord:
+    '-----------------------------------------------------------------------------------
+    Dim Word As SIXTH_WORDS
+    
+    'Begin with the built-in instructions
+    If WordStrUCase = STR_ADD Then
+        Let Word = WORD_ADD
+    ElseIf WordStrUCase = STR_DIV Then Let Word = WORD_DIV
+    ElseIf WordStrUCase = STR_DROP Then Let Word = WORD_DROP
+    ElseIf WordStrUCase = STR_DUP Then Let Word = WORD_DUP
+    ElseIf WordStrUCase = STR_ECHO Then Let Word = WORD_ECHO
+    ElseIf WordStrUCase = STR_END Then Let Word = WORD_END
+    ElseIf WordStrUCase = STR_MUL Then Let Word = WORD_MUL
+    ElseIf WordStrUCase = STR_POW Then Let Word = WORD_POW
+    ElseIf WordStrUCase = STR_ROT Then Let Word = WORD_ROT
+    ElseIf WordStrUCase = STR_SUB Then Let Word = WORD_SUB
+    ElseIf WordStrUCase = STR_SWAP Then Let Word = WORD_SWAP
+    Else
+        'Check to see if the Word is already defined
+        Dim w As Long
+        For w = 1 To WordCount
+            If Equals(WordStr, Dictionary(w).Text) Then Let Word = w: GoTo AddWord
+        Next w
+        
+        'Define a new Word
+        Let WordCount = WordCount + 1
+        ReDim Preserve Dictionary(1 To WordCount)
+        
+        Let Dictionary(WordCount).Text = WordStr
+        If IsNumeric(Word) Then
+            Let Dictionary(WordCount).Kind = KIND_LITERAL
+            Let Dictionary(WordCount).Param = CDbl(WordStr)
+            Let Word = WordCount
+        End If
+    End If
+    
+    'So that we don't have to check for the end of the program all the time, we always _
+     make the program 1 instruction longer and cap it with END. Thus the program will _
+     naturally come to a halt without having to check for an out-of-bounds array check _
+     every execute cycle
+AddWord:
+    
+    'Increase the length of the program
+    Let ReturnList.Length = ReturnList.Length + 1
+    ReDim Preserve ReturnList.Items(0 To ReturnList.Length) As SIXTH_WORDS
+    'Assign the instruction
+    Let ReturnList.Items(ReturnList.Length - 1) = Word
+    'Cap the program with the END instruction
+    Let ReturnList.Items(ReturnList.Length) = WORD_END
+    
+    'Prepare for the next Word
+    Let WordStr = vbNullString
+    Let WordStrUCase = vbNullString
+    
+    Return
+    '-----------------------------------------------------------------------------------
 End Function
